@@ -1,0 +1,142 @@
+---
+title: "FUNCION DIST Y DECISION"
+author: "Jessica Huerta Barcenas"
+date: "2026-03-01"
+output: html_document
+---
+F. Evaluador Distibucion
+```{r}
+
+evaluador_probabilistico <- function(datos, distribuciones) {
+  # PASO CRÍTICO: Asegurar que los datos sean un vector numérico puro
+  datos <- as.numeric(na.omit(as.vector(datos)))
+  
+  resultados_ajuste <- list()
+  tabla_p_values <- data.frame() 
+  
+  for (d in distribuciones) {
+    ajuste <- try({
+       # CASO ESPECIAL 1: Binomial (necesita el tamaño de la muestra/ensayos)
+      if (d == "binom") {
+        fitdist(datos, "binom", method = "mle", fix.arg = list(size = max(datos)), start= list(prob = 0.5))
+      } 
+      # CASO ESPECIAL 2: Binomial Negativa (a veces necesita valores iniciales)
+      else if (d == "nbinom") {
+        fitdist(datos, "nbinom", method = "mle", start = list(size = 1, mu = mean(datos)))
+      }
+      # CASO GENERAL: Todas las demás (exp, norm, weibull, gamma, etc.)
+      else {
+        fitdist(data=datos, distr=d, method = "mle")
+      }
+    }, silent = TRUE)
+    
+    if (!inherits(ajuste, "try-error")) {
+      resultados_ajuste[[d]] <- ajuste
+      
+      
+      # Cálculo de p-values para tu función de decisión
+       if (d %in% c("pois", "geom", "nbinom", "binom")) {
+         discretas<-gofstat(ajuste, fitnames = d)
+         p_discretas<-discretas$chisqpvalue
+         
+         nueva_fila <- data.frame(dist = d, p_kolmogorov = p_discretas, aic = ajuste$aic)
+      tabla_p_values <- rbind(tabla_p_values, nueva_fila)
+       }
+      
+      else {
+
+      prueba_ks <- ks.test(datos, paste0("p", d), ajuste$estimate)
+      p_ks <- prueba_k$p.value
+      
+      # Guardamos resultados
+      nueva_fila <- data.frame(dist = d, p_kolmogorov = p_ks, aic = ajuste$aic)
+      tabla_p_values <- rbind(tabla_p_values, nueva_fila)
+      }
+      message(paste("Ajuste exitoso para:", d))
+    } else {
+      message(paste("No se pudo ajustar:", d))
+    }
+  }
+  
+  # Verificación de seguridad
+  if (length(resultados_ajuste) == 0) {
+    stop("Ninguna distribución pudo ser ajustada. Revisa tus datos.")
+  }
+  
+  # Generar el objeto gofstat (contiene estadísticos como ks, ad, cvm)
+  estadisticos <- gofstat(resultados_ajuste, fitnames = names(resultados_ajuste))
+  
+  return(list(ajustes = resultados_ajuste, tabla_gof = estadisticos, p_values = tabla_p_values))
+}
+
+```
+
+F. Decisión
+
+```{r}
+super_decision <- function(resultado_evaluador) {
+  
+  # 2. Obtenemos los p-values y Aics
+  p_values <- resultado_evaluador$p_values$p_kolmogorov
+  aics <- resultado_evaluador$tabla_gof$aic
+  
+  # 3. Identificamos cuáles NO se rechazan (p > 0.05) 
+  nombres <- resultado_evaluador$p_values$dist
+  candidatas <- nombres[p_values > 0.05]
+  
+  cat("--- RESULTADOS DEL ANÁLISIS ---\n")
+  
+  if (length(candidatas) == 0) {
+    cat("Decisión: Se rechazan todas las distribuciones.\n")
+    cat("Conclusión: Los datos no siguen ninguna de las distribuciones probadas.\n")
+  } else {
+    # 4. De las que pasaron, buscamos la que tiene el AIC más bajo 
+    # Filtramos los AICs de solo las candidatas
+    aics_candidatas <- aics[candidatas]
+    ganadora <- candidatas[which.min(aics_candidatas)]
+    
+    cat("Distribuciones aceptadas (p > 0.05):", paste(candidatas, collapse = ", "), "\n")
+    cat("----------------------------------------------\n")
+    cat("GANADORA: La distribución", ganadora, "es la mejor.\n")
+    cat("Criterio: Menor AIC observado (", aics[ganadora], ").\n")
+    cat("Conclusión: Existe suficiente evidencia para afirmar que los datos siguen una distribución", 
+        ganadora, "con 95% de confianza.\n")
+    
+    # Extraer parámetros de la ganadora para el reporte 
+    cat("Parámetros ajustados:\n")
+    print(resultado_evaluador$ajustes[[ganadora]]$estimate)
+  }
+}
+
+```
+
+PRUEBAS
+
+```{r}
+#DATOS DE CLASE
+datos<- datos_tiempos$`Tiempo Interarribo (Seg)`
+#Prueba 1
+Prueba_1 <- evaluador_probabilistico(datos, c("exp", "weibull", "gamma"))
+super_decision(Prueba_1)
+
+#PRUEBA 2
+set.seed(123) 
+# Simulamos el conteo de personas en una fila (Distribución Poisson)
+datos_discretos <- rpois(n = 100, lambda = 5)
+dist_discretas <- c("pois", "nbinom", "binom")
+
+Prueba_2<-evaluador_probabilistico(datos_discretos,dist_discretas)
+super_decision(Prueba_2)
+
+#PRUEBA 3
+Cantidad <- c(0,1,2,3,4,5,6,7,8,9,10,11)
+Frecuencia <- c(59,26,24,18,12,5,4,3,0,3,0,2)
+
+datos_discretos_desagrupados <- rep(Cantidad, Frecuencia)
+distribuciones_a_probar<- c("pois", "geom", "nbinom", "binom")
+Prueba_3<-evaluador_probabilistico(datos_discretos_desagrupados,distribuciones_a_probar)
+Prueba_3$p_values$p_kolmogorov
+super_decision(Prueba_3)
+
+
+```
